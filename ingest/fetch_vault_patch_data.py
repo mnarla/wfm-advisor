@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import json
 import logging
@@ -16,7 +17,7 @@ WEAPON_JSON_URLS = [
 ]
 PATCHLOGS_JSON_URL = "https://raw.githubusercontent.com/WFCD/warframe-patchlogs/master/data/patchlogs.json"
 VAULT_TRADER_URL = "https://api.warframestat.us/pc/vaultTrader"
-DB_PATH = "db/wfm.db"
+DB_PATH = os.getenv("DB_PATH", "db/wfm.db")
 WATCHLIST_PATH = "config/watchlist.json"
 
 

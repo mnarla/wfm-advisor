@@ -24,7 +24,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "db/wfm.db"
+DB_PATH = os.getenv("DB_PATH", "db/wfm.db")
 
 
 def build_synthesis_prompt(

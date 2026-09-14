@@ -16,7 +16,7 @@ from nodes.graph import create_advisor_graph
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "wfm.db")
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "wfm.db"))
 
 # Staleness thresholds (independent per data type)
 PRICE_STALENESS_THRESHOLD = timedelta(hours=24)

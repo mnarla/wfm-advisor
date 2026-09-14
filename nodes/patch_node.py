@@ -29,7 +29,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "db/wfm.db"
+DB_PATH = os.getenv("DB_PATH", "db/wfm.db")
 PATCHLOG_LOOKBACK_DAYS = 90  # Match trend_node's 90-day window
 
 

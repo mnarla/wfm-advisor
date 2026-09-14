@@ -11,6 +11,7 @@ currently unvaulted in Resurgence (temporary supply influx), long-vaulted (price
 soon-to-vault, or unvaulted.
 """
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -19,7 +20,7 @@ from typing import Dict, Any, Optional
 VAULTING_SOON_THRESHOLD_DAYS = 90      # If estimated vault date is within this many days, flag as vaulting_soon
 RECENTLY_VAULTED_THRESHOLD_DAYS = 180  # If vault_date or resurgence end is within this many days, flag as recently_vaulted
 
-DB_PATH = "db/wfm.db"
+DB_PATH = os.getenv("DB_PATH", "db/wfm.db")
 
 
 def _parse_date(date_str: str | None) -> datetime | None:

@@ -18,13 +18,14 @@ model complexity and requires hyperparameter tuning — don't reach for it until
 OLS is demonstrably inadequate.
 """
 
+import os
 import sqlite3
 import numpy as np
 from scipy import stats
 from datetime import datetime, timezone
 from typing import Dict, Any
 
-DB_PATH = "db/wfm.db"
+DB_PATH = os.getenv("DB_PATH", "db/wfm.db")
 
 # Tunable thresholds
 PCT_CHANGE_THRESHOLD = 10.0           # % change over 90 days for classification (rising/falling)

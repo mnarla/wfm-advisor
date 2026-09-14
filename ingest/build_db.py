@@ -7,7 +7,7 @@ from ingest.fetch_wfm import fetch_watchlist_data
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'db', 'wfm.db')
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.dirname(__file__)), 'db', 'wfm.db'))
 
 def init_db():
     """Initializes the SQLite database with the schema."""

@@ -32,6 +32,7 @@ htmlcov/
 scratch/
 tmp/
 .temp/
+build/
 
 # IDE & OS Artifacts
 .DS_Store

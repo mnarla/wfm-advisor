@@ -5,6 +5,7 @@ Executes the compiled LangGraph pipeline across all 85 items in db/wfm.db,
 logging progress per item, capturing errors safely, and printing full results.
 """
 
+import os
 import sys
 import sqlite3
 import logging
@@ -12,7 +13,7 @@ from typing import Dict, Any, List
 
 from nodes.graph import create_advisor_graph
 
-DB_PATH = "db/wfm.db"
+DB_PATH = os.getenv("DB_PATH", "db/wfm.db")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("run_pipeline")
