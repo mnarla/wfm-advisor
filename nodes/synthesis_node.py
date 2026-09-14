@@ -235,169 +235,41 @@ def call_llm_for_synthesis(prompt: str) -> Dict[str, Any]:
     return safe_default
 
 
-def save_recommendation_to_db(
-    item_id: str,
-    recommendation: str,
-    confidence: str,
-    primary_driver: str,
-    trend_signal: Dict[str, Any],
-    vault_signal: Dict[str, Any],
-    patch_signal: Dict[str, Any],
-    reasoning: str,
-    conn: sqlite3.Connection,
-):
-    """
-    Writes the final recommendation to the `recommendations` table in db/wfm.db.
-    """
-    now_iso = datetime.now(tz=timezone.utc).isoformat()
-    cursor = conn.cursor()
-
-    slope_val = trend_signal.get("slope")
-    vault_val = vault_signal.get("signal")
-    patch_val = patch_signal.get("expected_impact")
-
-    cursor.execute(
-        """
-        INSERT INTO recommendations 
-        (item_id, generated_at, recommendation, confidence, primary_driver, trend_signal, vault_signal, patch_signal, reasoning)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            item_id,
-            now_iso,
-            recommendation,
-            confidence,
-            primary_driver,
-            slope_val,
-            vault_val,
-            patch_val,
-            reasoning,
-        ),
-    )
-    conn.commit()
-
-
 def compute_synthesis(
     item_id: str,
     item_name: str,
     trend_signal: Dict[str, Any],
     vault_signal: Dict[str, Any],
     patch_signal: Dict[str, Any],
-    conn: sqlite3.Connection,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Dict[str, Any]:
     """
-    Orchestrates synthesis: builds prompt, invokes LLM, writes to DB, and returns decision dict.
+    Orchestrates synthesis: builds prompt, invokes LLM, and returns decision dict.
     """
     prompt = build_synthesis_prompt(item_name, trend_signal, vault_signal, patch_signal)
-    result = call_llm_for_synthesis(prompt)
-
-    save_recommendation_to_db(
-        item_id=item_id,
-        recommendation=result["recommendation"],
-        confidence=result["confidence"],
-        primary_driver=result["primary_driver"],
-        trend_signal=trend_signal,
-        vault_signal=vault_signal,
-        patch_signal=patch_signal,
-        reasoning=result["reasoning"],
-        conn=conn,
-    )
-
-    return result
+    return call_llm_for_synthesis(prompt)
 
 
 def synthesis_node(state: AgentState) -> AgentState:
     """
-    LangGraph node: reads signals from state, performs synthesis, saves to DB,
-    and returns updated AgentState.
+    LangGraph node: reads signals from state, calls LLM for synthesis,
+    and updates state with the recommendation and reasoning.
     """
     item_id = state.get("item_id", "")
-    item_name = state.get("item_name")
-    
-    if not item_name and item_id:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute("SELECT item_name FROM items WHERE item_id = ?", (item_id,))
-        row = cur.fetchone()
-        conn.close()
-        if row:
-            item_name = row["item_name"]
-            
-    if not item_name:
-        item_name = state.get("url_slug", "Unknown Item")
-
+    item_name = state.get("item_name", "Unknown Item")
     trend_signal = state.get("trend_signal", {})
     vault_signal = state.get("vault_signal", {})
     patch_signal = state.get("patch_signal", {})
 
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        decision = compute_synthesis(
-            item_id=item_id,
-            item_name=item_name,
-            trend_signal=trend_signal,
-            vault_signal=vault_signal,
-            patch_signal=patch_signal,
-            conn=conn,
-        )
-    finally:
-        conn.close()
+    decision = compute_synthesis(
+        item_id=item_id,
+        item_name=item_name,
+        trend_signal=trend_signal,
+        vault_signal=vault_signal,
+        patch_signal=patch_signal,
+    )
 
     state["recommendation"] = decision["recommendation"]
     state["reasoning"] = decision["reasoning"]
 
     return state
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    from nodes.trend_node import compute_trend_signal
-    from nodes.vault_node import compute_vault_signal
-    from nodes.patch_node import compute_patch_signal
-
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    test_frames = ["Xaku Prime", "Loki Prime", "Rhino Prime"]
-    cur.execute(
-        """
-        SELECT item_id, url_slug, item_name, frame_name, vault_status, vault_date, estimated_vault_date
-        FROM items
-        WHERE frame_name IN (?, ?, ?) AND component_type = 'set'
-        ORDER BY frame_name
-        """,
-        tuple(test_frames),
-    )
-    items = cur.fetchall()
-
-    print("=" * 100)
-    print("SYNTHESIS NODE TEST RUN (Set Components)")
-    print("=" * 100)
-
-    for item in items:
-        item_id = item["item_id"]
-        item_name = item["item_name"]
-        frame_name = item["frame_name"]
-
-        trend_sig = compute_trend_signal(item_id, conn)
-        vault_sig = compute_vault_signal(
-            item["vault_status"], item["vault_date"], item["estimated_vault_date"]
-        )
-        patch_sig = compute_patch_signal(frame_name, conn)
-
-        decision = compute_synthesis(item_id, item_name, trend_sig, vault_sig, patch_sig, conn)
-
-        print(f"\nITEM: {item_name} ({item['url_slug']})")
-        print(f"  Signals:")
-        print(f"    - Trend: {trend_sig.get('signal')} | slope={trend_sig.get('slope')} | pct_90d={trend_sig.get('pct_change_90d')}%")
-        print(f"    - Vault: {vault_sig.get('signal')}")
-        print(f"    - Patch: relevant={patch_sig.get('relevant_patch_found')} | impact={patch_sig.get('expected_impact')}")
-        print(f"  Synthesis Result:")
-        print(f"    - Recommendation: {decision['recommendation']}")
-        print(f"    - Confidence:     {decision['confidence']}")
-        print(f"    - Primary Driver: {decision['primary_driver']}")
-        print(f"    - Reasoning:      {decision['reasoning']}")
-
-    conn.close()

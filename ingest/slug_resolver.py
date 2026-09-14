@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple
 
-import httpx
+import requests
 from rapidfuzz import fuzz, process, utils
 
 from ingest.slug_utils import parse_item, parse_slug
@@ -122,10 +122,9 @@ def fetch_prime_catalog(timeout: float = 10.0) -> Dict[str, Dict[str, str]]:
 
     catalog: Dict[str, Dict[str, str]] = {}
     try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.get(WFM_V2_ITEMS_URL, headers=WFM_HEADERS)
-            response.raise_for_status()
-            data = response.json().get("data", [])
+        response = requests.get(WFM_V2_ITEMS_URL, headers=WFM_HEADERS, timeout=timeout)
+        response.raise_for_status()
+        data = response.json().get("data", [])
 
         for item in data:
             tags = item.get("tags", [])

@@ -57,21 +57,10 @@ def _extract_relevant_patch_lines(text: Optional[str], frame_name: str) -> str:
     """Extracts bullet points and lines containing the frame or base name to avoid token bloat."""
     if not text:
         return ""
-    base_name = frame_name.replace(" Prime", "").strip().lower()
-    frame_lower = frame_name.lower()
-    
-    matched = []
-    for line in text.split("\n"):
-        line_clean = line.strip()
-        if not line_clean:
-            continue
-        line_lower = line_clean.lower()
-        if frame_lower in line_lower or base_name in line_lower:
-            matched.append(line_clean)
-            
-    if matched:
-        return "\n".join(matched)
-    return text[:500] if len(text) > 500 else text
+    base = frame_name.replace(" Prime", "").strip().lower()
+    fn = frame_name.lower()
+    matched = [line.strip() for line in text.splitlines() if line.strip() and (fn in line.lower() or base in line.lower())]
+    return "\n".join(matched) if matched else text[:500]
 
 
 def build_patch_context_prompt(frame_name: str, patchlogs: List[Dict[str, Any]]) -> str:
@@ -139,44 +128,7 @@ Respond with ONLY valid JSON (no markdown fences, no explanation outside the JSO
     return prompt
 
 
-def _call_fallback_llm(prompt: str) -> Optional[str]:
-    """
-    Fallback LLM caller using raw requests to OpenRouter,
-    avoiding any extra package dependencies. Retries on 429 rate limits.
-    """
-    import time
-    import requests
-
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-
-    if openrouter_key and openrouter_key != "your_openrouter_api_key_here":
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {openrouter_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/mnarla/wfmarket-scout",
-            "X-Title": "WFM Sell-Timing Advisor",
-        }
-        data = {
-            "model": "openai/gpt-oss-20b:free",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
-            "max_tokens": 1000,
-        }
-        for attempt in range(2):
-            try:
-                logger.info("Attempting LLM call via OpenRouter fallback...")
-                res = requests.post(url, json=data, headers=headers, timeout=20)
-                if res.status_code == 429 and attempt == 0:
-                    logger.warning("OpenRouter returned 429 rate limit. Waiting 5s before retry...")
-                    time.sleep(5.0)
-                    continue
-                res.raise_for_status()
-                return res.json()["choices"][0]["message"]["content"]
-            except Exception as e:
-                logger.warning(f"OpenRouter fallback failed: {e}")
-
-    return None
+from nodes.synthesis_node import _call_fallback_llm
 
 
 def call_llm_for_patch_analysis(prompt: str) -> Dict[str, Any]:
@@ -335,52 +287,3 @@ def patch_node(state: Dict[str, Any]) -> Dict[str, Any]:
         conn.close()
 
     return {"patch_signal": signal}
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    conn = sqlite3.connect(DB_PATH)
-
-    # --- Test 1: Xaku Prime (hot frame, likely has relevant recent context) ---
-    print("=" * 80)
-    print("TEST: Xaku Prime")
-    print("=" * 80)
-
-    xaku_patchlogs = get_recent_patchlogs("Xaku Prime", conn)
-    print(f"\nRecent patchlogs found: {len(xaku_patchlogs)}")
-
-    xaku_prompt = build_patch_context_prompt("Xaku Prime", xaku_patchlogs)
-    print(f"\n--- PROMPT SENT TO LLM ---")
-    print(xaku_prompt)
-    print(f"--- END PROMPT ---\n")
-
-    xaku_result = compute_patch_signal("Xaku Prime", conn)
-    print(f"Result:")
-    for k, v in xaku_result.items():
-        print(f"  {k}: {v}")
-
-    # --- Test 2: Volt Prime (recently changed frame) ---
-    print("\n" + "=" * 80)
-    print("TEST: Volt Prime")
-    print("=" * 80)
-
-    volt_patchlogs = get_recent_patchlogs("Volt Prime", conn)
-    print(f"\nRecent patchlogs found: {len(volt_patchlogs)}")
-
-    volt_result = compute_patch_signal("Volt Prime", conn)
-    print(f"Result:")
-    for k, v in volt_result.items():
-        print(f"  {k}: {v}")
-
-    # --- Test 3: Loki Prime (long-vaulted, should be "no relevant patch") ---
-    print("\n" + "=" * 80)
-    print("TEST: Loki Prime")
-    print("=" * 80)
-
-    loki_result = compute_patch_signal("Loki Prime", conn)
-    print(f"Result:")
-    for k, v in loki_result.items():
-        print(f"  {k}: {v}")
-
-    conn.close()

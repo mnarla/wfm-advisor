@@ -24,20 +24,13 @@ DB_PATH = os.getenv("DB_PATH", "db/wfm.db")
 
 
 def _parse_date(date_str: str | None) -> datetime | None:
-    """Parse an ISO date string (YYYY-MM-DD or full ISO timestamp) into a UTC datetime."""
+    """Parse an ISO date string into a UTC datetime."""
     if not date_str:
         return None
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            return datetime.strptime(
-                date_str[:len(fmt.replace('%f', '000000').replace('%', '').replace(fmt[0], ''))],
-                fmt,
-            ).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
     try:
-        return datetime.strptime(date_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    except ValueError:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
         return None
 
 
@@ -227,33 +220,3 @@ def vault_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     return {"vault_signal": signal}
-
-
-if __name__ == "__main__":
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT item_id, url_slug, frame_name, component_type,
-               vault_status, vault_date, estimated_vault_date,
-               last_resurgence_end, is_resurgence_active, resurgence_end_date
-        FROM items
-        WHERE frame_name IN ('Loki Prime', 'Rhino Prime', 'Xaku Prime', 'Voruna Prime', 'Baruuk Prime', 'Revenant Prime')
-        ORDER BY frame_name, component_type
-    """)
-    rows = cur.fetchall()
-    conn.close()
-
-    print(f"{'Slug':<45} {'Signal':<20} {'Reasoning'}")
-    print("-" * 140)
-    for row in rows:
-        signal = compute_vault_signal(
-            vault_status=row["vault_status"],
-            vault_date=row["vault_date"],
-            estimated_vault_date=row["estimated_vault_date"],
-            last_resurgence_end=row["last_resurgence_end"],
-            is_resurgence_active=bool(row["is_resurgence_active"]),
-            resurgence_end_date=row["resurgence_end_date"],
-        )
-        print(f"{row['url_slug']:<45} {signal['signal']:<20} {signal['reasoning']}")

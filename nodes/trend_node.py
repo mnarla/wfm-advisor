@@ -34,16 +34,11 @@ R2_CONFIDENCE_THRESHOLD = 0.25       # R² below this -> low_confidence
 
 
 def _parse_timestamp(ts: str) -> float:
-    """Convert ISO timestamp string to a POSIX float (seconds since epoch)."""
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(ts, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except ValueError:
-            continue
-    raise ValueError(f"Cannot parse timestamp: {ts!r}")
+    """Convert ISO timestamp string to POSIX float."""
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def compute_trend_signal(item_id: str, conn: sqlite3.Connection) -> Dict[str, Any]:
@@ -188,35 +183,3 @@ def trend_node(state: Dict[str, Any]) -> Dict[str, Any]:
         conn.close()
 
     return {"trend_signal": signal}
-
-
-if __name__ == "__main__":
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT item_id, url_slug, frame_name, component_type
-        FROM items
-        WHERE frame_name IN ('Loki Prime', 'Rhino Prime', 'Xaku Prime')
-        ORDER BY frame_name, component_type
-        """
-    )
-    items = cur.fetchall()
-
-    print(f"{'Slug':<45} {'Signal':<20} {'Slope/day':>10} {'R²':>6} {'Conf':<6} {'% 90d':>7}  Reasoning")
-    print("-" * 150)
-    for item in items:
-        result = compute_trend_signal(item["item_id"], conn)
-        print(
-            f"{item['url_slug']:<45} "
-            f"{result['signal']:<20} "
-            f"{str(result['slope']) if result['slope'] is not None else 'N/A':>10} "
-            f"{str(result['r_squared']) if result['r_squared'] is not None else 'N/A':>6} "
-            f"{result['confidence']:<6} "
-            f"{str(result['pct_change_90d']) if result['pct_change_90d'] is not None else 'N/A':>7}  "
-            f"{result['reasoning']}"
-        )
-
-    conn.close()
