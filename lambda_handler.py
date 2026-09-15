@@ -22,6 +22,15 @@ import requests
 
 from ingest.cache_manager import get_recommendation, format_recommendation_card
 from nodes.graph import create_advisor_graph
+from discord_bot.signature import verify_discord_signature
+from discord_bot.embeds import (
+    build_advice_embed,
+    build_fair_price_embed,
+    build_parts_embed,
+    build_vault_embed,
+    build_agent_embed,
+)
+from nodes.tools import check_fair_price, compare_set_vs_parts, get_vault_status
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -33,6 +42,7 @@ S3_CACHE_KEY = os.getenv("S3_CACHE_KEY", "wfm.db")
 DB_PATH = os.getenv("DB_PATH", "/tmp/wfm.db" if "AWS_LAMBDA_FUNCTION_NAME" in os.environ else "db/wfm.db")
 SSM_GEMINI_KEY_PARAM = os.getenv("SSM_GEMINI_KEY_PARAM", "/wfmadvisor/gemini_api_key")
 SSM_DISCORD_PARAM = os.getenv("SSM_DISCORD_PARAM", "/wfmadvisor/discord_webhook_url")
+SSM_DISCORD_PUBLIC_KEY_PARAM = os.getenv("SSM_DISCORD_PUBLIC_KEY_PARAM", "/wfmadvisor/discord_public_key")
 WATCHLIST_PATH = os.getenv("WATCHLIST_PATH", "config/watchlist.json")
 
 # In-memory SSM parameter cache across warm Lambda invocations
@@ -83,6 +93,12 @@ def init_credentials() -> None:
         if discord_url:
             os.environ["DISCORD_WEBHOOK_URL"] = discord_url
             logger.info("Loaded DISCORD_WEBHOOK_URL from SSM Parameter Store.")
+
+    if not os.getenv("DISCORD_PUBLIC_KEY"):
+        discord_pub = get_ssm_parameter(SSM_DISCORD_PUBLIC_KEY_PARAM)
+        if discord_pub:
+            os.environ["DISCORD_PUBLIC_KEY"] = discord_pub
+            logger.info("Loaded DISCORD_PUBLIC_KEY from SSM Parameter Store.")
 
 
 def ensure_db_available(s3_client: Optional[Any] = None) -> None:
@@ -401,20 +417,209 @@ def handle_query_request(user_query: str) -> Dict[str, Any]:
     return result
 
 
-def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """
-    Main Lambda entrypoint.
-    Dispatches between EventBridge cron / batch triggers and HTTP API queries.
-    """
-    logger.info(f"Received Lambda event: {json.dumps(event)}")
 
-    # 1. Initialize credentials from SSM Parameter Store if needed
+def handle_discord_worker(event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Executes Discord slash command logic asynchronously and patches original deferred message.
+    """
     init_credentials()
-
-    # 2. Ensure SQLite cache exists (pulling from S3 or seed DB)
     ensure_db_available()
 
-    # 3. Detect invocation mode
+    initial_mtime = os.path.getmtime(DB_PATH) if os.path.exists(DB_PATH) else 0
+
+    command = event.get("command", "")
+    options = event.get("options") or {}
+    app_id = event.get("application_id")
+    token = event.get("token")
+
+    logger.info(f"Processing discord_worker command '/{command}' with options: {options}")
+
+    embed = None
+    try:
+        if command == "ask":
+            query = options.get("query") or options.get("item") or event.get("query") or event.get("item") or ""
+            rec = get_recommendation(query, db_path=DB_PATH)
+            if rec.get("agent_mode"):
+                text = rec.get("response") or rec.get("formatted_card", "")
+                embed = build_agent_embed(query, text)
+            elif rec.get("status") == "resolved":
+                embed = build_advice_embed(rec)
+            else:
+                card = rec.get("formatted_card") or f"Unable to find market information for '{query}'."
+                embed = build_agent_embed(query, card)
+
+        elif command == "card":
+            item = options.get("item") or options.get("query") or event.get("item") or event.get("query") or ""
+            rec = get_recommendation(item, db_path=DB_PATH)
+            if rec.get("status") == "resolved":
+                embed = build_advice_embed(rec)
+            else:
+                embed = build_agent_embed(item, f"Could not find item '{item}'. Please check spelling.")
+
+        elif command == "fair":
+            item = options.get("item") or event.get("item") or ""
+            price_val = options.get("price") if "price" in options else event.get("price", 0.0)
+            try:
+                price_float = float(price_val)
+            except (ValueError, TypeError):
+                price_float = 0.0
+
+            analysis_text = check_fair_price.invoke({"item_name": item, "offered_price": price_float})
+            embed = build_fair_price_embed(item, price_float, analysis_text)
+
+        elif command == "parts":
+            item = options.get("item") or options.get("query") or event.get("item") or ""
+            breakdown = compare_set_vs_parts.invoke({"item_name": item})
+            embed = build_parts_embed(item, breakdown)
+
+        elif command == "vault":
+            item = options.get("item") or options.get("query") or event.get("item") or ""
+            vault_text = get_vault_status.invoke({"item_name": item})
+            embed = build_vault_embed(item, vault_text)
+
+        else:
+            embed = build_agent_embed(command, f"Unknown slash command: /{command}")
+
+    except Exception as e:
+        logger.error(f"Error executing command '{command}': {e}", exc_info=True)
+        embed = build_agent_embed(command, f"Error processing command: {str(e)}")
+
+    new_mtime = os.path.getmtime(DB_PATH) if os.path.exists(DB_PATH) else 0
+    if new_mtime > initial_mtime:
+        logger.info("Database cache was updated during Discord worker execution; syncing to S3...")
+        sync_db_to_s3()
+
+    if app_id and token:
+        webhook_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
+        payload = {"embeds": [embed]}
+        try:
+            res = requests.patch(
+                webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            res.raise_for_status()
+            logger.info(f"Successfully posted embed to Discord webhook: {webhook_url}")
+        except Exception as e:
+            logger.error(f"Failed to patch Discord original message: {e}", exc_info=True)
+
+    return {
+        "status": "success",
+        "command": command,
+        "embed": embed,
+    }
+
+
+def lambda_handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
+    """
+    Main Lambda entrypoint.
+    Dispatches between EventBridge cron / batch triggers, HTTP API queries,
+    and Discord Slash Command interactions.
+    """
+    # 1. Check if event is an internal async discord worker execution
+    if event.get("discord_worker"):
+        return handle_discord_worker(event)
+
+    try:
+        logger.info(f"Received Lambda event: {json.dumps(event)}")
+    except Exception:
+        logger.info(f"Received Lambda event: {event}")
+
+    # 2. Initialize credentials from SSM Parameter Store if needed
+    init_credentials()
+
+    # 3. Check for Discord HTTP headers: x-signature-ed25519 and x-signature-timestamp (case-insensitive)
+    headers = {str(k).lower(): str(v) for k, v in (event.get("headers") or {}).items()}
+    sig = headers.get("x-signature-ed25519")
+    timestamp = headers.get("x-signature-timestamp")
+
+    if sig and timestamp:
+        public_key = os.getenv("DISCORD_PUBLIC_KEY") or get_ssm_parameter(SSM_DISCORD_PUBLIC_KEY_PARAM) or ""
+        body_raw = event.get("body", "")
+        if event.get("isBase64Encoded"):
+            import base64
+            try:
+                body_raw = base64.b64decode(body_raw).decode("utf-8")
+            except Exception as e:
+                logger.warning(f"Failed to decode base64 Discord request body: {e}")
+
+        if not verify_discord_signature(sig, timestamp, body_raw, public_key):
+            logger.warning("Invalid Discord signature; returning 401.")
+            return {
+                "statusCode": 401,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": "invalid request signature"}),
+            }
+
+        try:
+            body_json = json.loads(body_raw) if isinstance(body_raw, str) else (body_raw or {})
+        except Exception as e:
+            logger.error(f"Malformed JSON in Discord interaction request: {e}")
+            return {
+                "statusCode": 400,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": "malformed JSON body"}),
+            }
+
+        interaction_type = body_json.get("type")
+
+        # Type 1: PING -> PONG
+        if interaction_type == 1:
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"type": 1}),
+            }
+
+        # Type 2: APPLICATION_COMMAND
+        if interaction_type == 2:
+            app_id = body_json.get("application_id")
+            token = body_json.get("token")
+            data = body_json.get("data", {})
+            command_name = data.get("name")
+            options_list = data.get("options", [])
+            options_dict = {opt["name"]: opt.get("value") for opt in options_list if "name" in opt}
+
+            worker_payload = {
+                "discord_worker": True,
+                "command": command_name,
+                "options": options_dict,
+                "application_id": app_id,
+                "token": token,
+            }
+
+            function_name = getattr(context, "function_name", None) if context else None
+            if not function_name and os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+                function_name = os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+
+            if function_name:
+                try:
+                    lambda_client = boto3.client("lambda", region_name=AWS_REGION)
+                    lambda_client.invoke(
+                        FunctionName=function_name,
+                        InvocationType="Event",
+                        Payload=json.dumps(worker_payload),
+                    )
+                    logger.info(f"Dispatched async worker invocation to Lambda function '{function_name}'.")
+                except Exception as e:
+                    logger.error(f"Failed to invoke Lambda async worker ({e}), falling back to background thread.")
+                    import threading
+                    threading.Thread(target=handle_discord_worker, args=(worker_payload,)).start()
+            else:
+                import threading
+                threading.Thread(target=handle_discord_worker, args=(worker_payload,)).start()
+
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"type": 5}),
+            }
+
+    # 4. Ensure SQLite cache exists (pulling from S3 or seed DB)
+    ensure_db_available()
+
+    # 5. Detect invocation mode
     # EventBridge scheduled cron sends {"detail-type": "Scheduled Event"} or custom {"mode": "batch"}
     is_scheduled = (
         event.get("mode") == "batch"

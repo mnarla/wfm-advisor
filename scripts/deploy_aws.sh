@@ -95,6 +95,26 @@ if [ -n "${DISCORD_WEBHOOK_URL:-}" ] && [ "${DISCORD_WEBHOOK_URL}" != "your_disc
         --region "${AWS_REGION}" >/dev/null
 fi
 
+if [ -n "${DISCORD_PUBLIC_KEY:-}" ] && [ "${DISCORD_PUBLIC_KEY}" != "your_public_key_here" ]; then
+    echo "Writing DISCORD_PUBLIC_KEY to SSM Parameter Store (/wfmadvisor/discord_public_key)..."
+    aws ssm put-parameter \
+        --name "/wfmadvisor/discord_public_key" \
+        --type "String" \
+        --value "${DISCORD_PUBLIC_KEY}" \
+        --overwrite \
+        --region "${AWS_REGION}" >/dev/null
+fi
+
+if [ -n "${DISCORD_APPLICATION_ID:-}" ] && [ "${DISCORD_APPLICATION_ID}" != "your_application_id_here" ]; then
+    echo "Writing DISCORD_APPLICATION_ID to SSM Parameter Store (/wfmadvisor/discord_application_id)..."
+    aws ssm put-parameter \
+        --name "/wfmadvisor/discord_application_id" \
+        --type "String" \
+        --value "${DISCORD_APPLICATION_ID}" \
+        --overwrite \
+        --region "${AWS_REGION}" >/dev/null
+fi
+
 # 4. Create or Update IAM Execution Role
 echo "--- 3. Configuring IAM Execution Role (${ROLE_NAME}) ---"
 TRUST_POLICY='{
@@ -148,6 +168,13 @@ POLICY_DOC=$(cat <<EOF
         "s3:PutObject"
       ],
       "Resource": "arn:aws:s3:::${S3_BUCKET}/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:InvokeFunction"
+      ],
+      "Resource": "arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}"
     }
   ]
 }
@@ -181,6 +208,9 @@ if aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${AWS_RE
         --s3-bucket "${S3_BUCKET}" \
         --s3-key "build/function.zip" \
         --region "${AWS_REGION}" >/dev/null
+
+    echo "Waiting for Lambda code update to complete..."
+    aws lambda wait function-updated --function-name "${FUNCTION_NAME}" --region "${AWS_REGION}"
 
     echo "Updating Lambda configuration..."
     aws lambda update-function-configuration \

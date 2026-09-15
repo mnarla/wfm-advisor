@@ -46,6 +46,7 @@ cp "${ROOT_DIR}/run_pipeline.py" "${PACKAGE_DIR}/"
 cp -R "${ROOT_DIR}/nodes" "${PACKAGE_DIR}/"
 cp -R "${ROOT_DIR}/ingest" "${PACKAGE_DIR}/"
 cp -R "${ROOT_DIR}/config" "${PACKAGE_DIR}/"
+cp -R "${ROOT_DIR}/discord_bot" "${PACKAGE_DIR}/"
 
 # Include schema.sql for fresh initialization
 mkdir -p "${PACKAGE_DIR}/db"
