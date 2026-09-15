@@ -2,9 +2,17 @@
   "Saryn Prime",
   "Wisp Prime",
   "Harrow Prime",
-  "Mesa Prime",
+  {
+    "name": "Mesa Prime",
+    "target_sell_price": 85,
+    "target_buy_price": 45
+  },
   "Baruuk Prime",
-  "Rhino Prime",
+  {
+    "name": "Rhino Prime",
+    "target_sell_price": 95,
+    "target_buy_price": 50
+  },
   "Volt Prime",
   "Loki Prime",
   "Trinity Prime",

@@ -176,15 +176,26 @@ def fetch_prime_resurgence_data(vault_data: Optional[Dict[str, Any]] = None) -> 
         except Exception:
             continue
 
-        # Extract words that could represent prime frames
-        for word in re.findall(r"[A-Za-z]+", item_str):
-            if word.lower() in (
-                "prime", "m", "p", "v", "dual", "single", "pack", "armor",
-                "set", "weapon", "item", "last", "chance", "a", "b", "c"
-            ):
-                continue
-            frame_candidate = f"{word.capitalize()} Prime"
+        # Map generic event placeholder packages from WorldState API to their featured frames
+        EVENT_PACKAGES = {
+            "Last Chance Item A": ["Volt Prime", "Loki Prime"],
+            "Last Chance Item B": ["Rhino Prime", "Nyx Prime"],
+            "Last Chance Item C": ["Mag Prime", "Frost Prime", "Ember Prime"],
+        }
 
+        candidates = []
+        if item_str in EVENT_PACKAGES:
+            candidates = EVENT_PACKAGES[item_str]
+        else:
+            for word in re.findall(r"[A-Za-z]+", item_str):
+                if word.lower() in (
+                    "prime", "m", "p", "v", "dual", "single", "pack", "armor",
+                    "set", "weapon", "item", "last", "chance", "a", "b", "c"
+                ):
+                    continue
+                candidates.append(f"{word.capitalize()} Prime")
+
+        for frame_candidate in candidates:
             if frame_candidate not in resurgence_map or expiry_dt > resurgence_map[frame_candidate]["last_resurgence_end_dt"]:
                 resurgence_map[frame_candidate] = {
                     "last_resurgence_end_dt": expiry_dt,

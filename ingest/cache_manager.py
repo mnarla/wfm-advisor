@@ -14,6 +14,11 @@ from ingest.fetch_vault_patch_data import (
 )
 from nodes.graph import create_advisor_graph
 
+# Lazy import to avoid circular dependency at module load time
+def _get_run_market_agent():
+    from nodes.agent import run_market_agent
+    return run_market_agent
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "wfm.db"))
@@ -43,39 +48,18 @@ def init_cache_table(conn: sqlite3.Connection) -> None:
 
 
 def parse_timestamp(ts: Any) -> Optional[datetime]:
-    """
-    Converts stored timestamp (ISO string, int, float, or datetime) to a UTC datetime object.
-    """
+    """Converts stored timestamp (ISO string, int, float, or datetime) to UTC datetime."""
     if ts is None:
         return None
     if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            return ts.replace(tzinfo=timezone.utc)
-        return ts.astimezone(timezone.utc)
+        return ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
     if isinstance(ts, (int, float)):
         return datetime.fromtimestamp(ts, tz=timezone.utc)
     if isinstance(ts, str):
-        for fmt in (
-            "%Y-%m-%dT%H:%M:%S.%f%z",
-            "%Y-%m-%dT%H:%M:%S%z",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S.%f",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d",
-        ):
-            try:
-                dt = datetime.strptime(ts, fmt)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-            except ValueError:
-                continue
         try:
-            dt = datetime.fromisoformat(ts)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except Exception:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
             return None
     return None
 
@@ -472,15 +456,72 @@ def format_recommendation_card(rec: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _is_conversational_query(user_input: str) -> bool:
+    """
+    Returns True if the user_input contains intent keywords indicating a conversational
+    or multi-intent query that should be routed through the tool-calling agent rather than
+    the baseline sequential pipeline.
+
+    The baseline pipeline is used only for bare item name queries (e.g. "rhino prime",
+    "excal p bp") — those are the fastest path and preserve backward compatibility.
+    """
+    lower = user_input.lower()
+    intent_keywords = [
+        # Fair-price check
+        "fair", "worth", "reasonable", "scam", "good deal", "good price",
+        "is that", "is this", "offered", "offering", "selling for",
+        # Buy intent
+        "buy", "purchase", "invest", "investing", "good time to buy",
+        "should i buy", "worth buying",
+        # Compare intent
+        "vs", "versus", "compare", "better", "which",
+        # Set vs parts
+        "set or parts", "parts or set", "sell parts", "sell as set",
+        "individual", "breakdown",
+        # Focused sub-intent queries
+        "vault", "resurgence", "vaulted", "vaulting", "when does",
+        "patch", "buff", "nerf", "rework", "what changed",
+        "trend", "trending", "going up", "going down", "price trend",
+    ]
+    # If any keyword appears in the query, route to agent
+    for kw in intent_keywords:
+        if kw in lower:
+            return True
+    # Also route if query has >3 words (bare item names are typically 2-3 words max)
+    word_count = len(user_input.split())
+    return word_count > 4
+
+
 def get_recommendation(user_input: str, db_path: str = DB_PATH) -> Dict[str, Any]:
     """
-    Entry point for on-demand query architecture:
-      1. Calls resolve_item_query(user_input)
-      2. If ambiguous or not_found, returns immediately without touching cache or graph
-      3. If resolved, calls ensure_fresh_data(slugs)
-      4. Invokes the existing LangGraph pipeline per slug
-      5. Returns structured recommendation results with explicit numerical breakdowns
+    Entry point for on-demand query architecture. Supports two routing paths:
+
+    1. **Conversational / intent-specific queries** (e.g. "Is 45p fair for Rhino Prime?",
+       "Compare Rhino vs Saryn", "Is it better to sell parts or the set?"):
+       Routes to the Phase 2 tool-calling agent (nodes/agent.py) which dynamically
+       selects only the relevant domain tools and returns a natural-language response.
+
+    2. **Bare item name queries** (e.g. "rhino prime", "excal p bp", "soma prime barrel"):
+       Uses the original fast-path: resolve → ensure_fresh → sequential pipeline
+       (trend → vault → patch → synthesis). Returns the full formatted card.
+       This preserves 100% backward compatibility with existing behavior.
     """
+    # Route conversational queries to the Phase 2 agent
+    if _is_conversational_query(user_input):
+        try:
+            run_market_agent = _get_run_market_agent()
+            result = run_market_agent(user_input, db_path=db_path)
+            return {
+                "status": "ok" if result["status"] == "ok" else "error",
+                "query": user_input,
+                "response": result["response"],
+                "formatted_card": result["response"],
+                "agent_mode": True,
+            }
+        except Exception as e:
+            logger.error(f"Agent routing failed, falling back to pipeline: {e}")
+            # Fall through to baseline pipeline below
+
     resolved: ResolvedQuery = resolve_item_query(user_input)
 
     if resolved.status in ("ambiguous", "not_found"):

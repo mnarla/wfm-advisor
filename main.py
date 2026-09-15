@@ -2,7 +2,11 @@ import os
 import sys
 import argparse
 import logging
+import warnings
 from dotenv import load_dotenv
+
+# Suppress library warnings (such as model sampling parameter notices)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 from ingest.build_db import build_database
 from ingest.cache_manager import get_recommendation
@@ -28,8 +32,10 @@ load_dotenv()
 def query_item(user_input: str):
     """
     Executes on-demand recommendation query and prints the formatted card.
+    Bare item names use the fast sequential pipeline; conversational / intent-specific
+    queries are routed to the Phase 2 tool-calling agent.
     """
-    print(f"\nProcessing on-demand query: '{user_input}'...")
+    print(f"\nProcessing query: '{user_input}'...")
     res = get_recommendation(user_input)
 
     status = res.get("status")
@@ -44,9 +50,19 @@ def query_item(user_input: str):
         print("Please refine your search query (e.g. specify the full frame name).")
         return
 
+    if status == "error":
+        print(f"\n[Error] {res.get('response', 'An unknown error occurred.')}")
+        return
+
     formatted_card = res.get("formatted_card")
     if formatted_card:
-        print("\n" + formatted_card + "\n")
+        # Agent-mode responses don't need the extra card borders
+        if res.get("agent_mode"):
+            print("\n" + "=" * 80)
+            print(formatted_card)
+            print("=" * 80 + "\n")
+        else:
+            print("\n" + formatted_card + "\n")
     else:
         print(res)
 
@@ -56,8 +72,17 @@ def interactive_mode():
     Interactive prompt loop for asking sell-timing advice.
     """
     print("\n================================================================================")
-    print("WARFRAME MARKET SELL-TIMING ADVISOR (On-Demand Query Engine)")
-    print("Type any Prime item name (e.g. 'rhino prime', 'excal p bp', 'wisp prime sys')")
+    print("WARFRAME MARKET SELL-TIMING ADVISOR (Phase 2 — Tool-Calling Agent)")
+    print()
+    print("Examples:")
+    print("  rhino prime               → Full SELL/HOLD analysis (fast pipeline)")
+    print("  Is 45p fair for Rhino Prime Blueprint?  → Fair-price check")
+    print("  Should I buy Loki Prime?  → Buy intent analysis")
+    print("  Compare Rhino Prime vs Saryn Prime      → Side-by-side comparison")
+    print("  Is Volt Prime vaulted?    → Vault status check")
+    print("  Sell Saryn Prime as set or parts?       → Set vs. parts math")
+    print("  What changed for Wisp Prime?            → Patch notes analysis")
+    print()
     print("Type 'exit' or 'quit' to exit.")
     print("================================================================================\n")
 

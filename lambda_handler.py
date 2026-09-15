@@ -149,28 +149,41 @@ def sync_db_to_s3(s3_client: Optional[Any] = None) -> bool:
         return False
 
 
-def send_discord_alert(sell_items: List[Dict[str, Any]], total_scanned: int) -> bool:
+def send_discord_alert(
+    sell_items: List[Dict[str, Any]],
+    total_scanned: int,
+    resurgence_alerts: Optional[List[Dict[str, Any]]] = None,
+    threshold_alerts: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
     """
     Sends a rich Discord embed summary to DISCORD_WEBHOOK_URL.
     Best-effort: errors are logged, never failing the Lambda invocation.
+    Includes sections for SELL recommendations, imminent resurgence expirations,
+    and price-threshold alerts.
     """
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook_url or webhook_url.startswith("your_"):
         logger.info("No valid DISCORD_WEBHOOK_URL configured; skipping Discord notification.")
         return False
 
+    resurgence_alerts = resurgence_alerts or []
+    threshold_alerts = threshold_alerts or []
     now_utc = os.popen("date -u +'%Y-%m-%d %H:%M UTC'").read().strip() if hasattr(os, "popen") else "Daily Scan"
 
-    if not sell_items:
+    has_alerts = bool(sell_items or resurgence_alerts or threshold_alerts)
+
+    if not has_alerts:
         embed = {
             "title": "🛡️ Warframe Market Daily Scan: All Items Held",
-            "description": f"Completed automated market scan across **{total_scanned} watchlisted items**. Zero sell triggers met; continue holding all inventory.",
+            "description": f"Completed automated market scan across **{total_scanned} watchlisted items**. Zero sell triggers or price thresholds met; continue holding all inventory.",
             "color": 0x3498DB,  # Blue
             "footer": {"text": f"WFM Sell-Timing Advisor • {now_utc}"},
         }
     else:
         fields = []
-        for item in sell_items[:20]:  # Discord embed limit is 25 fields
+
+        # 1. SELL Signals
+        for item in sell_items[:10]:
             price_str = f"{item.get('current_price', 'N/A')}p"
             trend = item.get("pct_change_90d")
             trend_str = f"+{trend}%" if trend and trend > 0 else f"{trend}%" if trend else "N/A"
@@ -187,11 +200,50 @@ def send_discord_alert(sell_items: List[Dict[str, Any]], total_scanned: int) -> 
                 "inline": False,
             })
 
+        # 2. Resurgence Countdown Alerts (<= 7 days remaining)
+        for resurg in resurgence_alerts[:5]:
+            fields.append({
+                "name": f"⏳ {resurg['item_name']} — Resurgence Ending Soon!",
+                "value": (
+                    f"**Remaining:** `{resurg.get('days_remaining')} day(s)`\n"
+                    f"> Rotation closing soon. Unvaulting supply influx will end and prices may begin recovering."
+                ),
+                "inline": False,
+            })
+
+        # 3. Price Threshold Alerts
+        for thresh in threshold_alerts[:5]:
+            t_type = thresh.get("type", "sell")
+            icon = "🎯" if t_type == "sell" else "🛒"
+            fields.append({
+                "name": f"{icon} {thresh['item_name']} — Target {t_type.upper()} Price Reached!",
+                "value": (
+                    f"**Current:** `{thresh.get('current_price')}p` | **Target:** `{thresh.get('target_price')}p`\n"
+                    f"> Current market price meets your configured watchlist threshold."
+                ),
+                "inline": False,
+            })
+
+        if sell_items and not resurgence_alerts and not threshold_alerts:
+            title = f"🚨 Warframe Market Alert: {len(sell_items)} SELL Signal(s) Detected!"
+            description = f"The automated daily scan evaluated **{total_scanned} watchlisted items** and identified **{len(sell_items)}** prime selling opportunity(s):"
+        else:
+            title_parts = []
+            if sell_items:
+                title_parts.append(f"{len(sell_items)} SELL")
+            if resurgence_alerts:
+                title_parts.append(f"{len(resurgence_alerts)} Resurgence")
+            if threshold_alerts:
+                title_parts.append(f"{len(threshold_alerts)} Threshold")
+
+            title = f"🚨 Warframe Market Alert: {', '.join(title_parts)} Alert(s) Detected!"
+            description = f"Evaluated **{total_scanned} watchlisted items** and identified key opportunities:"
+
         embed = {
-            "title": f"🚨 Warframe Market Alert: {len(sell_items)} SELL Signal(s) Detected!",
-            "description": f"The automated daily scan evaluated **{total_scanned} watchlisted items** and identified **{len(sell_items)}** prime selling opportunity(s):",
-            "color": 0xE74C3C,  # Red
-            "fields": fields,
+            "title": title,
+            "description": description,
+            "color": 0xE74C3C if sell_items else 0xF39C12,  # Red if sell, orange otherwise
+            "fields": fields[:25],
             "footer": {"text": f"WFM Sell-Timing Advisor • {now_utc}"},
         }
 
@@ -204,7 +256,7 @@ def send_discord_alert(sell_items: List[Dict[str, Any]], total_scanned: int) -> 
     try:
         res = requests.post(webhook_url, json=payload, timeout=10)
         res.raise_for_status()
-        logger.info(f"Successfully posted Discord alert for {len(sell_items)} sell items.")
+        logger.info(f"Successfully posted Discord alert.")
         return True
     except Exception as e:
         logger.error(f"Failed to post alert to Discord webhook: {e}")
@@ -214,7 +266,9 @@ def send_discord_alert(sell_items: List[Dict[str, Any]], total_scanned: int) -> 
 def run_batch_evaluation() -> Dict[str, Any]:
     """
     Executes a batch evaluation over the items in config/watchlist.json.
-    Returns summary statistics and a list of SELL recommendations.
+    Supports both string item names and structured threshold objects.
+    Returns summary statistics and lists of SELL recommendations, resurgence warnings,
+    and price-threshold triggers.
     """
     watchlist = []
     if os.path.exists(WATCHLIST_PATH):
@@ -232,12 +286,26 @@ def run_batch_evaluation() -> Dict[str, Any]:
         watchlist = [r[0] for r in cur.fetchall()]
         conn.close()
 
-    logger.info(f"Starting batch evaluation for {len(watchlist)} watchlist frames...")
+    logger.info(f"Starting batch evaluation for {len(watchlist)} watchlist items...")
 
     evaluated_items = []
     sell_items = []
+    resurgence_alerts = []
+    threshold_alerts = []
 
-    for idx, frame in enumerate(watchlist, 1):
+    for idx, entry in enumerate(watchlist, 1):
+        if isinstance(entry, dict):
+            frame = entry.get("name", "")
+            target_sell = entry.get("target_sell_price")
+            target_buy = entry.get("target_buy_price")
+        else:
+            frame = str(entry)
+            target_sell = None
+            target_buy = None
+
+        if not frame:
+            continue
+
         try:
             logger.info(f"[{idx}/{len(watchlist)}] Evaluating {frame}...")
             res = get_recommendation(frame, db_path=DB_PATH)
@@ -248,23 +316,57 @@ def run_batch_evaluation() -> Dict[str, Any]:
             for item_res in results_list:
                 rec = item_res.get("recommendation", "HOLD")
                 evaluated_items.append(item_res)
+                trend = item_res.get("trend_signal", {})
+                vault = item_res.get("vault_signal", {})
+                curr_p = trend.get("current_price")
 
                 if rec == "SELL":
-                    trend = item_res.get("trend_signal", {})
                     sell_items.append({
                         "item_name": item_res.get("item_name") or frame,
                         "component_type": item_res.get("component_type", "Set"),
-                        "current_price": trend.get("current_price"),
+                        "current_price": curr_p,
                         "pct_change_90d": trend.get("pct_change_90d"),
                         "primary_driver": item_res.get("primary_driver", "trend"),
                         "confidence": trend.get("confidence", "high"),
                         "reasoning": item_res.get("reasoning", ""),
                     })
+
+                # Check Resurgence countdown alert (<= 7 days remaining)
+                if vault.get("is_resurgence_active"):
+                    days_until = vault.get("days_until_vault")
+                    if days_until is not None and 0 <= days_until <= 7:
+                        resurgence_alerts.append({
+                            "item_name": item_res.get("item_name") or frame,
+                            "days_remaining": days_until,
+                        })
+
+                # Check price threshold alerts
+                if curr_p is not None:
+                    if target_sell is not None and curr_p >= target_sell:
+                        threshold_alerts.append({
+                            "item_name": item_res.get("item_name") or frame,
+                            "type": "sell",
+                            "current_price": curr_p,
+                            "target_price": target_sell,
+                        })
+                    elif target_buy is not None and curr_p <= target_buy:
+                        threshold_alerts.append({
+                            "item_name": item_res.get("item_name") or frame,
+                            "type": "buy",
+                            "current_price": curr_p,
+                            "target_price": target_buy,
+                        })
+
         except Exception as e:
             logger.error(f"Error evaluating '{frame}' in batch: {e}", exc_info=True)
 
     # Post Discord alerts (best-effort)
-    send_discord_alert(sell_items, len(evaluated_items))
+    send_discord_alert(
+        sell_items,
+        len(evaluated_items),
+        resurgence_alerts=resurgence_alerts,
+        threshold_alerts=threshold_alerts,
+    )
 
     # Persist updated SQLite cache to S3
     sync_db_to_s3()
@@ -275,6 +377,8 @@ def run_batch_evaluation() -> Dict[str, Any]:
         "total_scanned": len(evaluated_items),
         "sell_count": len(sell_items),
         "sell_items": sell_items,
+        "resurgence_alerts": resurgence_alerts,
+        "threshold_alerts": threshold_alerts,
     }
 
 
