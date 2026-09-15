@@ -100,7 +100,6 @@ Create a `.env` file in the project root:
 ```env
 # LLM Providers
 GEMINI_API_KEY=your_gemini_api_key_here
-OPENROUTER_API_KEY=your_openrouter_api_key_here  # Optional fallback
 
 # Discord Bot Credentials
 DISCORD_APPLICATION_ID=your_application_id_here
