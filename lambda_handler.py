@@ -20,17 +20,43 @@ import boto3
 from botocore.exceptions import ClientError, BotoCoreError
 import requests
 
-from ingest.cache_manager import get_recommendation, format_recommendation_card
-from nodes.graph import create_advisor_graph
 from discord_bot.signature import verify_discord_signature
-from discord_bot.embeds import (
-    build_advice_embed,
-    build_fair_price_embed,
-    build_parts_embed,
-    build_vault_embed,
-    build_agent_embed,
-)
-from nodes.tools import check_fair_price, compare_set_vs_parts, get_vault_status
+
+# Lazy-loaded worker/query dependencies (loaded on worker/batch execution to keep cold ACKs < 400ms)
+get_recommendation = None
+check_fair_price = None
+compare_set_vs_parts = None
+get_vault_status = None
+build_advice_embed = None
+build_fair_price_embed = None
+build_parts_embed = None
+build_vault_embed = None
+build_agent_embed = None
+
+def _ensure_worker_deps() -> None:
+    global get_recommendation, check_fair_price, compare_set_vs_parts, get_vault_status
+    global build_advice_embed, build_fair_price_embed, build_parts_embed, build_vault_embed, build_agent_embed
+    if get_recommendation is None:
+        from ingest.cache_manager import get_recommendation as _gr
+        get_recommendation = _gr
+    if check_fair_price is None:
+        from nodes.tools import check_fair_price as _cfp, compare_set_vs_parts as _csvp, get_vault_status as _gvs
+        check_fair_price = _cfp
+        compare_set_vs_parts = _csvp
+        get_vault_status = _gvs
+    if build_agent_embed is None:
+        from discord_bot.embeds import (
+            build_advice_embed as _bae,
+            build_fair_price_embed as _bfpe,
+            build_parts_embed as _bpe,
+            build_vault_embed as _bve,
+            build_agent_embed as _bage,
+        )
+        build_advice_embed = _bae
+        build_fair_price_embed = _bfpe
+        build_parts_embed = _bpe
+        build_vault_embed = _bve
+        build_agent_embed = _bage
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -286,6 +312,7 @@ def run_batch_evaluation() -> Dict[str, Any]:
     Returns summary statistics and lists of SELL recommendations, resurgence warnings,
     and price-threshold triggers.
     """
+    _ensure_worker_deps()
     watchlist = []
     if os.path.exists(WATCHLIST_PATH):
         try:
@@ -403,6 +430,7 @@ def handle_query_request(user_query: str) -> Dict[str, Any]:
     Handles an on-demand single item recommendation query.
     Uploads to S3 only if the SQLite cache file was modified during execution.
     """
+    _ensure_worker_deps()
     initial_mtime = os.path.getmtime(DB_PATH) if os.path.exists(DB_PATH) else 0
 
     result = get_recommendation(user_query, db_path=DB_PATH)
@@ -422,6 +450,7 @@ def handle_discord_worker(event: Dict[str, Any]) -> Dict[str, Any]:
     """
     Executes Discord slash command logic asynchronously and patches original deferred message.
     """
+    _ensure_worker_deps()
     init_credentials()
     ensure_db_available()
 
@@ -526,10 +555,7 @@ def lambda_handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]
     except Exception:
         logger.info(f"Received Lambda event: {event}")
 
-    # 2. Initialize credentials from SSM Parameter Store if needed
-    init_credentials()
-
-    # 3. Check for Discord HTTP headers: x-signature-ed25519 and x-signature-timestamp (case-insensitive)
+    # 2. Check for Discord HTTP headers: x-signature-ed25519 and x-signature-timestamp (case-insensitive)
     headers = {str(k).lower(): str(v) for k, v in (event.get("headers") or {}).items()}
     sig = headers.get("x-signature-ed25519")
     timestamp = headers.get("x-signature-timestamp")
@@ -615,6 +641,9 @@ def lambda_handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]
                 "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"type": 5}),
             }
+
+    # 3. Initialize credentials from SSM Parameter Store if needed (HTTP/Batch queries)
+    init_credentials()
 
     # 4. Ensure SQLite cache exists (pulling from S3 or seed DB)
     ensure_db_available()
