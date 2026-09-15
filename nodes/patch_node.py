@@ -243,9 +243,11 @@ def compute_patch_signal(frame_name: str, conn: sqlite3.Connection) -> Dict[str,
             "total_patchlogs_in_db": total_in_db,
         }
 
-    prompt = build_patch_context_prompt(frame_name, patchlogs)
+    # Bound context window: evaluate up to the 8 most recent patch entries
+    capped_patchlogs = patchlogs[:8]
+    prompt = build_patch_context_prompt(frame_name, capped_patchlogs)
     result = call_llm_for_patch_analysis(prompt)
-    result["patchlogs_checked"] = len(patchlogs)
+    result["patchlogs_checked"] = len(capped_patchlogs)
     result["total_patchlogs_in_db"] = total_in_db
 
     return result

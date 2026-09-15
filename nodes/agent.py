@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 # Suppress fixed sampling defaults warning from langchain_google_genai
 warnings.filterwarnings("ignore", category=UserWarning, module="langchain_google_genai")
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, trim_messages
 from langgraph.graph import StateGraph, START, MessagesState
 from langgraph.prebuilt import ToolNode, tools_condition
 
@@ -79,6 +79,18 @@ def _build_llm() -> Any:
     return llm.bind_tools(ALL_MARKET_TOOLS)
 
 
+# Sliding window message trimmer: keeps system prompt + last 10 messages
+# ensuring the LLM context never overflows or suffers from context rot in long sessions
+message_trimmer = trim_messages(
+    max_tokens=10,
+    strategy="last",
+    token_counter=len,
+    start_on="human",
+    include_system=True,
+    allow_partial=False,
+)
+
+
 def create_market_agent():
     """
     Builds and compiles the LangGraph StateGraph for the Phase 2 tool-calling agent.
@@ -96,7 +108,10 @@ def create_market_agent():
         if not any(isinstance(m, SystemMessage) for m in messages):
             messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
 
-        response = llm.invoke(messages)
+        # Apply sliding window message trim to bound context size
+        trimmed_messages = message_trimmer.invoke(messages)
+
+        response = llm.invoke(trimmed_messages)
         return {"messages": [response]}
 
     workflow = StateGraph(MessagesState)
