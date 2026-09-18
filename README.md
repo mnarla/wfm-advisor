@@ -2,7 +2,7 @@
   <img src="assets/icon.png" alt="WFM Advisor Icon" width="96" height="96" />
 </p>
 
-<h1 align="center">WFM Sell-Timing Advisor</h1>
+<h1 align="center">WFM Advisor</h1>
 
 <p align="center">
   A Discord bot and CLI tool that helps Warframe players decide when to sell or hold Prime items. It analyzes Warframe Market historical price trends, relic vaulting cycles, and recent patch balance notes to recommend trade actions, evaluate fair prices, and optimize inventory value.
