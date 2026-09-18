@@ -1,12 +1,19 @@
-# WFM Sell-Timing Advisor
+<p align="center">
+  <img src="assets/icon.png" alt="WFM Advisor Icon" width="96" height="96" />
+</p>
 
-A Discord bot and CLI tool that helps Warframe players decide when to sell or hold Prime items. It analyzes Warframe Market historical price trends, relic vaulting cycles, and recent patch balance notes to recommend trade actions (SELL / HOLD / BUY), evaluate fair prices against 48-hour volume-weighted medians, and calculate whether it is better to sell a full set or break it into individual parts.
+<h1 align="center">WFM Sell-Timing Advisor</h1>
 
-The project is built around a LangGraph agent powered by Gemini 3.5 Flash Lite, backed by a local SQLite cache, and hosted on AWS Lambda.
+<p align="center">
+  A Discord bot and CLI tool that helps Warframe players decide when to sell or hold Prime items. It analyzes Warframe Market historical price trends, relic vaulting cycles, and recent patch balance notes to recommend trade actions, evaluate fair prices, and optimize inventory value.
+</p>
 
-[![Discord Bot](https://img.shields.io/badge/Discord-Add%20Bot%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1549213121791393852&scope=bot%20applications.commands&permissions=2147551232)
-[![AWS Serverless](https://img.shields.io/badge/AWS-Lambda%20Serverless-FF9900?style=for-the-badge&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/lambda/)
-[![Model](https://img.shields.io/badge/Model-Gemini%203.5%20Flash%20Lite-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
+<p align="center">
+  <a href="https://discord.com/oauth2/authorize?client_id=1549213121791393852&scope=bot%20applications.commands&permissions=2147551232"><img src="https://img.shields.io/badge/Discord-Add%20Bot%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Bot" /></a>
+  <a href="https://aws.amazon.com/lambda/"><img src="https://img.shields.io/badge/AWS-Lambda%20Serverless-FF9900?style=for-the-badge&logo=amazon-aws&logoColor=white" alt="AWS Serverless" /></a>
+  <a href="https://deepmind.google/technologies/gemini/"><img src="https://img.shields.io/badge/Model-Gemini%203.5%20Flash%20Lite-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Model" /></a>
+</p>
+
 
 > **Disclaimer**: These recommendations are synthesized from statistical price trends, relic vault schedules, and game patch notes to inform your trades on Warframe Market. They are not guaranteed market forecasts.
 
